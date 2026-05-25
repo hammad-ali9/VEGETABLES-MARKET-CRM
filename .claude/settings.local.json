@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(sed -i \"s|import { fmt, fmtShort, Page } from '../components/layout/Page';|import { Page } from '../components/layout/Page';\\\\nimport { fmt, fmtShort } from '../utils/format';|g\" Dashboard.jsx)",
+      "Bash(sed -i \"s|import { fmt, Page } from '../components/layout/Page';|import { Page } from '../components/layout/Page';\\\\nimport { fmt } from '../utils/format';|g\" NewEntry.jsx)",
+      "Bash(sed -i \"s|import { fmt, fmtShort, Page } from '../components/layout/Page';|import { Page } from '../components/layout/Page';\\\\nimport { fmt, fmtShort } from '../utils/format';|g\" Entries.jsx)",
+      "Bash(sed -i \"s|import { fmt, fmtShort, Page } from '../components/layout/Page';|import { Page } from '../components/layout/Page';\\\\nimport { fmt, fmtShort } from '../utils/format';|g\" Finance.jsx)",
+      "Bash(npm run *)",
+      "Bash(git -C \"C:\\\\Users\\\\hp\\\\Downloads\\\\Mandi CRM\" log --oneline -10)",
+      "Bash(npx vite *)",
+      "Bash(curl -s \"https://lviejsfcnkgtfymdposh.supabase.co/rest/v1/?apikey=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imx2aWVqc2ZjbmtndGZ5bWRwb3NoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzYzMjM1NzQsImV4cCI6MjA5MTg5OTU3NH0.Wwcmtb_9BPHbnaf5J_f1sNYnnK0isGxKOcG-MKp0peE\")",
+      "Bash(python -m json.tool)",
+      "Bash(curl -s -X GET \"https://lviejsfcnkgtfymdposh.supabase.co/rest/v1/truck_records?select=*&limit=1\" -H \"apikey: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imx2aWVqc2ZjbmtndGZ5bWRwb3NoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzYzMjM1NzQsImV4cCI6MjA5MTg5OTU3NH0.Wwcmtb_9BPHbnaf5J_f1sNYnnK0isGxKOcG-MKp0peE\" -H \"Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imx2aWVqc2ZjbmtndGZ5bWRwb3NoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzYzMjM1NzQsImV4cCI6MjA5MTg5OTU3NH0.Wwcmtb_9BPHbnaf5J_f1sNYnnK0isGxKOcG-MKp0peE\")",
+      "Bash(curl *)",
+      "Bash(python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); [print\\('Advance:', r['supplier_name'], '| amount:', r['amount'], '| remaining:', r['remaining']\\) for r in d]\")",
+      "Bash(Get-ChildItem -Path \"E:\\\\Projects\\\\Mandi-CRM\\\\Mandi CRM\\\\src\" -Recurse -Include \"*.jsx\",\"*.tsx\",\"*.js\",\"*.ts\")",
+      "Bash(Select-Object FullName)",
+      "PowerShell(Get-Content *)",
+      "Bash(npm test *)"
+    ]
+  }
+}

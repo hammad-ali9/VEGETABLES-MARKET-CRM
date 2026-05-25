@@ -1,0 +1,15 @@
+C:\Users\hp\Downloads\Mandi CRM\app.jsx
+C:\Users\hp\Downloads\Mandi CRM\data.js
+C:\Users\hp\Downloads\Mandi CRM\page-dashboard.jsx
+C:\Users\hp\Downloads\Mandi CRM\page-entries.jsx
+C:\Users\hp\Downloads\Mandi CRM\page-finance.jsx
+C:\Users\hp\Downloads\Mandi CRM\page-new-entry.jsx
+C:\Users\hp\Downloads\Mandi CRM\page-other.jsx
+C:\Users\hp\Downloads\Mandi CRM\shell.jsx
+C:\Users\hp\Downloads\Mandi CRM\tweaks-panel.jsx
+C:\Users\hp\Downloads\Mandi CRM\Your Mandi CRM.html
+C:\Users\hp\Downloads\Mandi CRM\assets\agency-cover.jpeg
+C:\Users\hp\Downloads\Mandi CRM\assets\agency-logo.jpeg
+C:\Users\hp\Downloads\Mandi CRM\uploads\Desktop - 2.png
+C:\Users\hp\Downloads\Mandi CRM\uploads\LINKDEIN COVER.jpg.jpeg
+C:\Users\hp\Downloads\Mandi CRM\uploads\LINKDEIN PROFILE.jpg.jpeg
