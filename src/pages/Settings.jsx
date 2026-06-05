@@ -5,6 +5,7 @@ import { useApp } from '../context/AppContext';
 import { useConfirm } from '../components/ui/ConfirmDialog';
 import { clearAllData } from '../lib/db';
 import { clearData } from '../utils/storage';
+import { SessionsManager } from '../components/whatsapp/SessionsManager';
 
 const SECTIONS = [
   ['General', 'عمومی', 'settings'],
@@ -176,28 +177,7 @@ export const SettingsPage = () => {
             </div>
           )}
 
-          {section === 3 && (
-            <div className="glass" style={{ padding: 24 }}>
-              <h2 className="h2">WhatsApp API · واٹس ایپ</h2>
-              <div className="spacer" />
-              <div className="small" style={{ color: 'var(--text-2)', lineHeight: 1.7, marginBottom: 16 }}>
-                Connect your WhatsApp Business API to enable campaign sending from the Marketing module.
-              </div>
-              <div className="field" style={{ marginBottom: 14 }}>
-                <div className="field-label"><span>API Key</span><span className="ur">اے پی آئی کی</span></div>
-                <input className="input" type="password" placeholder="whatsapp_api_key_here" value={draft.whatsappApiKey} onChange={set('whatsappApiKey')} />
-              </div>
-              <div className="field">
-                <div className="field-label"><span>Phone Number ID</span><span className="ur">فون نمبر آئی ڈی</span></div>
-                <input className="input" placeholder="e.g. 1234567890" value={draft.whatsappPhoneId} onChange={set('whatsappPhoneId')} />
-              </div>
-              {(draft.whatsappApiKey || draft.whatsappPhoneId) && (
-                <div className="chip success" style={{ marginTop: 12, display: 'inline-flex', gap: 6 }}>
-                  <Icon name="check" size={12} /> API credentials saved
-                </div>
-              )}
-            </div>
-          )}
+          {section === 3 && <SessionsManager />}
 
           {section === 4 && (
             <div className="glass" style={{ padding: 24 }}>

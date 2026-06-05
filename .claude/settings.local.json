@@ -16,7 +16,16 @@
       "Bash(Get-ChildItem -Path \"E:\\\\Projects\\\\Mandi-CRM\\\\Mandi CRM\\\\src\" -Recurse -Include \"*.jsx\",\"*.tsx\",\"*.js\",\"*.ts\")",
       "Bash(Select-Object FullName)",
       "PowerShell(Get-Content *)",
-      "Bash(npm test *)"
+      "Bash(npm test *)",
+      "Bash(git remote *)",
+      "Bash(git branch *)",
+      "Bash(git push *)",
+      "Bash(gh repo *)",
+      "WebFetch(domain:github.com)",
+      "Bash(docker --version)",
+      "Bash(docker compose *)",
+      "Bash(git clone *)",
+      "Bash(docker info *)"
     ]
   }
 }
