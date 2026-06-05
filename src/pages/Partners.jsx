@@ -14,7 +14,35 @@ const REPORT_FILTERS = [
   { id: 'year',   label: 'This Year',     ur: 'اس سال' },
 ];
 
-const ROLES = ['Partner', 'Investor', 'Silent Partner'];
+const ROLES = ['Partner', 'Investor', 'Silent Partner', 'Lender'];
+
+const parseNotes = (partner) => {
+  let notesText = partner.notes || '';
+  let investment = 0;
+  let purpose = '';
+  let dateRepaid = '';
+  try {
+    const parsed = JSON.parse(partner.notes);
+    if (parsed && typeof parsed === 'object') {
+      notesText = parsed.text || '';
+      investment = parsed.investment || 0;
+      purpose = parsed.purpose || '';
+      dateRepaid = parsed.dateRepaid || '';
+    }
+  } catch (e) {
+    // Plain text
+  }
+  return { notesText, investment, purpose, dateRepaid };
+};
+
+const serializeNotes = (notesText, investment, purpose, dateRepaid) => {
+  return JSON.stringify({
+    text: notesText || '',
+    investment: parseFloat(investment) || 0,
+    purpose: purpose || '',
+    dateRepaid: dateRepaid || '',
+  });
+};
 
 const filterByDate = (arr, filter) => {
   if (filter === 'all') return arr;
@@ -51,19 +79,39 @@ const calcNetProfit = (entries, expenses) => {
 
 const PartnerModal = ({ data, onClose, onSave }) => {
   const isEdit = !!data?.id;
+  const { notesText, investment, purpose, dateRepaid } = data
+    ? parseNotes(data)
+    : { notesText: '', investment: '', purpose: '', dateRepaid: '' };
+
   const [form, setForm] = useState(
-    data || { name: '', role: 'Partner', sharePercent: '', joinDate: TODAY, phone: '', notes: '' }
+    data
+      ? { ...data, notes: notesText, investment, purpose, dateRepaid }
+      : { name: '', role: 'Partner', sharePercent: '', joinDate: TODAY, phone: '', notes: '', investment: '', purpose: '', dateRepaid: '' }
   );
   const set = (k, v) => setForm(prev => ({ ...prev, [k]: v }));
 
   const handleSave = () => {
     if (!form.name.trim()) { alert('Name is required.'); return; }
-    const sharePercent = parseFloat(form.sharePercent);
-    if (!sharePercent || sharePercent <= 0 || sharePercent > 100) {
-      alert('Share % must be between 0.1 and 100.');
-      return;
+    
+    const role = form.role;
+    let sharePercent = parseFloat(form.sharePercent) || 0;
+    if (role !== 'Lender') {
+      if (sharePercent < 0 || sharePercent > 100) {
+        alert('Share % must be between 0 and 100.');
+        return;
+      }
+    } else {
+      sharePercent = 0;
     }
-    onSave({ ...form, name: form.name.trim(), sharePercent, payments: form.payments || [] });
+
+    const serialized = serializeNotes(form.notes, form.investment, form.purpose, form.dateRepaid);
+    onSave({
+      ...form,
+      name: form.name.trim(),
+      sharePercent,
+      notes: serialized,
+      payments: form.payments || [],
+    });
     onClose();
   };
 
@@ -74,7 +122,7 @@ const PartnerModal = ({ data, onClose, onSave }) => {
           <div className="row">
             <div style={{ flex: 1 }}>
               <h2 className="h2">{isEdit ? 'Edit Partner' : 'Add Partner'} · {isEdit ? 'ترمیم' : 'نیا شراکت دار'}</h2>
-              <div className="small">Investor or business partner · سرمایہ کار یا شراکت دار</div>
+              <div className="small">Investor, business partner, or lender · شراکت دار / سرمایہ کار / قرض دہندہ</div>
             </div>
             <button className="btn btn-ghost btn-icon" onClick={onClose}>✕</button>
           </div>
@@ -87,33 +135,70 @@ const PartnerModal = ({ data, onClose, onSave }) => {
             </div>
             <div className="field">
               <div className="field-label"><span>Role</span><span className="ur">کردار</span></div>
-              <select className="select" value={form.role} onChange={e => set('role', e.target.value)}>
+              <select className="select" value={form.role} onChange={e => {
+                const r = e.target.value;
+                set('role', r);
+                if (r === 'Lender') {
+                  set('sharePercent', 0);
+                }
+              }}>
                 {ROLES.map(r => <option key={r}>{r}</option>)}
               </select>
             </div>
-            <div className="field">
-              <div className="field-label"><span>Share % <span className="req">*</span></span><span className="ur">منافع حصہ</span></div>
-              <div style={{ position: 'relative' }}>
-                <input
-                  className="input num"
-                  type="number"
-                  min="0.1"
-                  max="100"
-                  step="0.5"
-                  placeholder="10"
-                  style={{ paddingRight: 36 }}
-                  value={form.sharePercent}
-                  onChange={e => set('sharePercent', e.target.value)}
-                />
-                <span style={{ position: 'absolute', right: 12, top: '50%', transform: 'translateY(-50%)', fontSize: 13, color: 'var(--text-3)', fontWeight: 700, pointerEvents: 'none' }}>%</span>
-              </div>
-            </div>
+
+            {form.role !== 'Lender' ? (
+              <>
+                <div className="field">
+                  <div className="field-label"><span>Share %</span><span className="ur">منافع حصہ</span></div>
+                  <div style={{ position: 'relative' }}>
+                    <input
+                      className="input num"
+                      type="number"
+                      min="0"
+                      max="100"
+                      step="0.1"
+                      placeholder="0"
+                      style={{ paddingRight: 36 }}
+                      value={form.sharePercent}
+                      onChange={e => set('sharePercent', e.target.value)}
+                    />
+                    <span style={{ position: 'absolute', right: 12, top: '50%', transform: 'translateY(-50%)', fontSize: 13, color: 'var(--text-3)', fontWeight: 700, pointerEvents: 'none' }}>%</span>
+                  </div>
+                </div>
+                <div className="field" style={{ gridColumn: '1 / -1' }}>
+                  <div className="field-label"><span>Total Investment</span><span className="ur">کل سرمایہ کاری</span></div>
+                  <div className="input-prefix">
+                    <span className="pre">Rs.</span>
+                    <input className="input num" type="number" placeholder="0" value={form.investment} onChange={e => set('investment', e.target.value)} />
+                  </div>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="field">
+                  <div className="field-label"><span>Loan Amount <span className="req">*</span></span><span className="ur">قرض رقم</span></div>
+                  <div className="input-prefix">
+                    <span className="pre">Rs.</span>
+                    <input className="input num" type="number" placeholder="0" value={form.investment} onChange={e => set('investment', e.target.value)} />
+                  </div>
+                </div>
+                <div className="field" style={{ gridColumn: '1 / -1' }}>
+                  <div className="field-label"><span>Purpose of Loan</span><span className="ur">قرض کا مقصد</span></div>
+                  <input className="input" placeholder="e.g. Tomato purchase support" value={form.purpose} onChange={e => set('purpose', e.target.value)} />
+                </div>
+                <div className="field">
+                  <div className="field-label"><span>Date Repaid Target</span><span className="ur">ادائیگی ہدف تاریخ</span></div>
+                  <input className="input" type="date" value={form.dateRepaid} onChange={e => set('dateRepaid', e.target.value)} />
+                </div>
+              </>
+            )}
+
             <div className="field">
               <div className="field-label"><span>Phone</span><span className="ur">فون</span></div>
               <input className="input" placeholder="03xx-xxxxxxx" value={form.phone} onChange={e => set('phone', e.target.value)} />
             </div>
             <div className="field">
-              <div className="field-label"><span>Join Date</span><span className="ur">تاریخ</span></div>
+              <div className="field-label"><span>{form.role === 'Lender' ? 'Date Received' : 'Join Date'}</span><span className="ur">تاریخ</span></div>
               <input className="input" type="date" value={form.joinDate} onChange={e => set('joinDate', e.target.value)} />
             </div>
             <div className="field" style={{ gridColumn: '1 / -1' }}>
@@ -146,14 +231,16 @@ const PaymentModal = ({ partner, shareAmount, onClose, onSave }) => {
     onClose();
   };
 
+  const isLender = partner.role === 'Lender';
+
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <div className="modal" style={{ maxWidth: 480 }} onClick={e => e.stopPropagation()}>
         <div style={{ padding: 24, borderBottom: '1px solid var(--glass-border)', position: 'sticky', top: 0, background: 'var(--glass-bg-strong)', backdropFilter: 'blur(20px)' }}>
           <div className="row">
             <div style={{ flex: 1 }}>
-              <h2 className="h2">Record Payment · ادائیگی</h2>
-              <div className="small">{partner.name} · {partner.sharePercent}% share{shareAmount > 0 ? ` · ${fmt(shareAmount)} owed` : ''}</div>
+              <h2 className="h2">{isLender ? 'Record Repayment' : 'Record Payment'} · {isLender ? 'قرض ادائیگی' : 'شراکت دار ادائیگی'}</h2>
+              <div className="small">{partner.name} · {isLender ? 'Lender' : `${partner.sharePercent}% share`}{shareAmount > 0 ? ` · ${fmt(shareAmount)} owed` : ''}</div>
             </div>
             <button className="btn btn-ghost btn-icon" onClick={onClose}>✕</button>
           </div>
@@ -173,7 +260,7 @@ const PaymentModal = ({ partner, shareAmount, onClose, onSave }) => {
             </div>
             <div className="field" style={{ gridColumn: '1 / -1' }}>
               <div className="field-label"><span>Notes</span><span className="ur">نوٹس</span></div>
-              <input className="input" placeholder="e.g. Q1 profit distribution" value={form.notes} onChange={e => set('notes', e.target.value)} />
+              <input className="input" placeholder={isLender ? "e.g. Loan installment repayment" : "e.g. Q1 profit distribution"} value={form.notes} onChange={e => set('notes', e.target.value)} />
             </div>
           </div>
           <div className="row gap-sm" style={{ justifyContent: 'flex-end' }}>
@@ -256,10 +343,14 @@ const HistoryModal = ({ partner, onClose, onDeletePayment }) => {
 // ── Partner Card ────────────────────────────────────────────────────────────
 
 const PartnerCard = ({ partner, shareAmount, onEdit, onDelete, onPay, onHistory }) => {
+  const { notesText, investment, purpose, dateRepaid } = parseNotes(partner);
   const totalPaid   = (partner.payments || []).reduce((s, p) => s + p.amount, 0);
-  const outstanding = Math.max(0, shareAmount - totalPaid);
-  const paidPct     = shareAmount > 0 ? Math.min(100, (totalPaid / shareAmount) * 100) : 0;
-  const isSettled   = shareAmount > 0 && outstanding === 0;
+
+  const isLender = partner.role === 'Lender';
+  const totalOwed = isLender ? investment : shareAmount;
+  const outstanding = Math.max(0, totalOwed - totalPaid);
+  const paidPct     = totalOwed > 0 ? Math.min(100, (totalPaid / totalOwed) * 100) : 0;
+  const isSettled   = totalOwed > 0 && outstanding === 0;
 
   return (
     <div className="glass" style={{ padding: 20, display: 'flex', flexDirection: 'column', gap: 14 }}>
@@ -267,9 +358,13 @@ const PartnerCard = ({ partner, shareAmount, onEdit, onDelete, onPay, onHistory 
       <div className="row between" style={{ alignItems: 'flex-start' }}>
         <div>
           <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 6 }}>{partner.name}</div>
-          <div className="row gap-sm">
+          <div className="row gap-sm" style={{ flexWrap: 'wrap' }}>
             <span className="chip">{partner.role}</span>
-            <span className="chip warn" style={{ fontWeight: 700 }}>{partner.sharePercent}% share</span>
+            {!isLender ? (
+              <span className="chip warn" style={{ fontWeight: 700 }}>{partner.sharePercent}% share</span>
+            ) : (
+              <span className="chip active" style={{ fontWeight: 700 }}>Lender</span>
+            )}
             {isSettled && <span className="chip" style={{ background: 'rgba(52,211,153,0.15)', color: 'var(--success)', fontWeight: 600 }}>Settled ✓</span>}
           </div>
         </div>
@@ -286,13 +381,13 @@ const PartnerCard = ({ partner, shareAmount, onEdit, onDelete, onPay, onHistory 
       {/* Amounts */}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8 }}>
         <div style={{ background: 'rgba(255,167,38,0.08)', borderRadius: 8, padding: '10px 12px' }}>
-          <div className="tiny" style={{ color: 'var(--text-3)', marginBottom: 4 }}>Share Amount</div>
+          <div className="tiny" style={{ color: 'var(--text-3)', marginBottom: 4 }}>{isLender ? 'Loan Amount' : 'Share Amount'}</div>
           <div className="num" style={{ fontSize: 14, fontWeight: 700, color: 'var(--orange-400)' }}>
-            {shareAmount > 0 ? fmt(shareAmount) : '—'}
+            {totalOwed > 0 ? fmt(totalOwed) : '—'}
           </div>
         </div>
         <div style={{ background: 'rgba(52,211,153,0.08)', borderRadius: 8, padding: '10px 12px' }}>
-          <div className="tiny" style={{ color: 'var(--text-3)', marginBottom: 4 }}>Paid</div>
+          <div className="tiny" style={{ color: 'var(--text-3)', marginBottom: 4 }}>{isLender ? 'Repaid' : 'Paid'}</div>
           <div className="num" style={{ fontSize: 14, fontWeight: 700, color: 'var(--success)' }}>
             {totalPaid > 0 ? fmt(totalPaid) : '—'}
           </div>
@@ -306,29 +401,38 @@ const PartnerCard = ({ partner, shareAmount, onEdit, onDelete, onPay, onHistory 
       </div>
 
       {/* Progress bar */}
-      {shareAmount > 0 && (
+      {totalOwed > 0 && (
         <div>
           <div className="bar">
             <span style={{ width: paidPct + '%', background: isSettled ? 'var(--success)' : 'var(--orange-400)' }} />
           </div>
           <div className="tiny" style={{ marginTop: 4, color: 'var(--text-3)' }}>
-            {Math.round(paidPct)}% paid · {(partner.payments || []).length} payment{(partner.payments || []).length !== 1 ? 's' : ''}
+            {Math.round(paidPct)}% {isLender ? 'repaid' : 'paid'} · {(partner.payments || []).length} payment{(partner.payments || []).length !== 1 ? 's' : ''}
           </div>
         </div>
       )}
 
+      {/* Lender specific details (purpose, dateRepaid) */}
+      {isLender && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4, background: 'rgba(255,255,255,0.02)', padding: 10, borderRadius: 8 }}>
+          {purpose && <div className="small" style={{ fontSize: 11, color: 'var(--text-2)' }}><strong>Purpose:</strong> {purpose}</div>}
+          {dateRepaid && <div className="small" style={{ fontSize: 11, color: 'var(--text-3)' }}><strong>Repay Target:</strong> {new Date(dateRepaid).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}</div>}
+        </div>
+      )}
+
       {/* Meta */}
-      {(partner.phone || partner.joinDate) && (
-        <div className="row gap-sm" style={{ flexWrap: 'wrap' }}>
+      {(partner.phone || partner.joinDate || (!isLender && investment > 0)) && (
+        <div className="row gap-sm" style={{ flexWrap: 'wrap', gap: '4px 8px' }}>
           {partner.phone && <span className="tiny" style={{ color: 'var(--text-3)' }}><Icon name="phone" size={11} /> {partner.phone}</span>}
-          {partner.joinDate && <span className="tiny" style={{ color: 'var(--text-3)' }}><Icon name="calendar" size={11} /> Joined {new Date(partner.joinDate).toLocaleDateString('en-GB', { month: 'short', year: 'numeric' })}</span>}
+          {partner.joinDate && <span className="tiny" style={{ color: 'var(--text-3)' }}><Icon name="calendar" size={11} /> {isLender ? 'Received' : 'Joined'} {new Date(partner.joinDate).toLocaleDateString('en-GB', { month: 'short', year: 'numeric' })}</span>}
+          {!isLender && investment > 0 && <span className="tiny" style={{ color: 'var(--text-3)' }}><Icon name="wallet" size={11} /> Invested: {fmt(investment)}</span>}
         </div>
       )}
 
       {/* Actions */}
       <div className="row gap-sm" style={{ marginTop: 2 }}>
         <button className="btn btn-primary btn-sm" style={{ flex: 1 }} onClick={onPay}>
-          <Icon name="plus" size={12} /> Pay Now
+          <Icon name="plus" size={12} /> {isLender ? 'Repay Loan' : 'Pay Now'}
         </button>
         <button className="btn btn-ghost btn-sm" title="Payment history" onClick={onHistory}>
           <Icon name="clock" size={13} />
@@ -354,13 +458,18 @@ export const PartnersPage = () => {
   const netProfit   = calcNetProfit(fe, fexp);
   const filterLabel = REPORT_FILTERS.find(f => f.id === filter)?.label || 'All Time';
 
-  const activePartners    = partners.filter(p => p.status !== 'inactive');
+  const activePartners    = partners.filter(p => p.status !== 'inactive' && p.role !== 'Lender');
+  const activeLenders     = partners.filter(p => p.status !== 'inactive' && p.role === 'Lender');
   const totalSharePct     = activePartners.reduce((s, p) => s + (p.sharePercent || 0), 0);
   const totalDistributed  = partners.reduce((s, p) => s + (p.payments || []).reduce((ss, pp) => ss + pp.amount, 0), 0);
   const totalOutstanding  = activePartners.reduce((s, p) => {
     const owed = netProfit > 0 ? Math.round(netProfit * (p.sharePercent / 100)) : 0;
     const paid = (p.payments || []).reduce((ss, pp) => ss + pp.amount, 0);
     return s + Math.max(0, owed - paid);
+  }, 0) + activeLenders.reduce((s, l) => {
+    const { investment } = parseNotes(l);
+    const paid = (l.payments || []).reduce((ss, pp) => ss + pp.amount, 0);
+    return s + Math.max(0, investment - paid);
   }, 0);
 
   const handleAdd    = p  => setPartners(prev => [{ ...p, id: crypto.randomUUID(), status: 'active' }, ...prev]);
@@ -454,7 +563,9 @@ export const PartnersPage = () => {
           )}
           <div className="grid-3">
             {partners.map(p => {
-              const shareAmt = netProfit > 0 ? Math.round(netProfit * (p.sharePercent / 100)) : 0;
+              const isLender = p.role === 'Lender';
+              const { investment } = parseNotes(p);
+              const shareAmt = isLender ? investment : (netProfit > 0 ? Math.round(netProfit * (p.sharePercent / 100)) : 0);
               return (
                 <PartnerCard
                   key={p.id}

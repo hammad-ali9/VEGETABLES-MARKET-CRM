@@ -582,10 +582,136 @@ const KPI = ({ label, ur, v, accent }) => (
 );
 
 export const LedgerPage = () => {
-  const { entries } = useApp();
+  const { entries, advances, setAdvances, setEntries } = useApp();
   const [q, setQ] = useState('');
   const [tab, setTab] = useState('supplier');
   const [selected, setSelected] = useState(null);
+  
+  // Advance recording state
+  const [showAdvanceModal, setShowAdvanceModal] = useState(false);
+  const [advForm, setAdvForm] = useState({ date: TODAY, amount: '', notes: '' });
+
+  // Customer recovery payment state
+  const [showCustPaymentModal, setShowCustPaymentModal] = useState(false);
+  const [custPaymentForm, setCustPaymentForm] = useState({ date: TODAY, amount: '', notes: '' });
+
+  // Customer transactions useMemo
+  const customerTransactions = useMemo(() => {
+    if (tab !== 'customer' || !selected) return [];
+    const txs = [];
+    const key = selected.name.toLowerCase();
+    entries.forEach(e => {
+      (e.buyerList || []).forEach(b => {
+        if ((b.name || '').toLowerCase() === key) {
+          const bGross = (b.crates || 0) * (b.price || 0);
+          const bWari  = b.wari !== undefined ? b.wari : (b.crates || 0) * (e.logRate || 5);
+          const bComm  = b.commission !== undefined ? b.commission : Math.round(bGross / (e.commDiv || 13.78));
+          const totalBill = bGross + bComm + bWari - (b.discount || 0);
+          const payment = b.advance || 0;
+          txs.push({
+            entryId: e.id,
+            entryDate: e.date,
+            date: b.date || e.date,
+            supplier: e.supplier,
+            vehicle: e.vehicle,
+            crates: b.crates || 0,
+            price: b.price || 0,
+            billNo: b.bill || '',
+            type: b.type || 'Cash',
+            bGross,
+            bWari,
+            bComm,
+            discount: b.discount || 0,
+            totalBill,
+            payment,
+            rawBuyer: b
+          });
+        }
+      });
+    });
+    return txs.sort((a, b) => new Date(a.date) - new Date(b.date));
+  }, [entries, selected, tab]);
+
+  // Customer ledger running balance and KPIs useMemo
+  const customerLedgerCalcs = useMemo(() => {
+    if (tab !== 'customer' || !selected) return null;
+    let running = 0;
+    let totalPurchases = 0;
+    let totalPayable = 0;
+    let totalPayments = 0;
+    let totalCrates = 0;
+
+    const ledger = customerTransactions.map(tx => {
+      running += tx.totalBill - tx.payment;
+      totalPurchases += tx.bGross;
+      totalPayable += tx.totalBill;
+      totalPayments += tx.payment;
+      totalCrates += tx.crates;
+      return {
+        ...tx,
+        balance: running
+      };
+    });
+
+    return {
+      ledger,
+      totalPurchases,
+      totalPayable,
+      totalPayments,
+      totalCrates,
+      outstanding: running
+    };
+  }, [customerTransactions, selected, tab]);
+
+  // Handler for customer payment recording
+  const handleRecordCustPayment = () => {
+    if (!selected) return;
+    const amount = parseFloat(custPaymentForm.amount) || 0;
+    if (!amount || amount <= 0) {
+      alert('Amount must be greater than 0.');
+      return;
+    }
+    
+    const customerEntries = entries.filter(e => 
+      (e.buyerList || []).some(b => (b.name || '').toLowerCase() === selected.name.toLowerCase())
+    );
+    
+    let targetEntry = null;
+    if (customerEntries.length > 0) {
+      const sorted = [...customerEntries].sort((a, b) => new Date(b.date) - new Date(a.date) || b.id.localeCompare(a.id));
+      targetEntry = sorted[0];
+    } else if (entries.length > 0) {
+      const sorted = [...entries].sort((a, b) => new Date(b.date) - new Date(a.date) || b.id.localeCompare(a.id));
+      targetEntry = sorted[0];
+    }
+    
+    if (!targetEntry) {
+      alert('No entries found in the system to append the recovery transaction.');
+      return;
+    }
+    
+    const paymentBuyerRecord = {
+      name: selected.name,
+      phone: selected.phone || '',
+      date: custPaymentForm.date || TODAY,
+      bill: custPaymentForm.notes ? `RECOVERY - ${custPaymentForm.notes}` : 'RECOVERY',
+      crates: 0,
+      price: 0,
+      discount: 0,
+      advance: amount,
+      type: 'Cash',
+      ownerId: null
+    };
+
+    const updatedEntry = {
+      ...targetEntry,
+      buyerList: [...(targetEntry.buyerList || []), paymentBuyerRecord]
+    };
+
+    setEntries(prev => prev.map(e => e.id === targetEntry.id ? updatedEntry : e));
+    setShowCustPaymentModal(false);
+    setCustPaymentForm({ date: TODAY, amount: '', notes: '' });
+  };
 
   // Build combined trader + goods-owner list from all entries
   const allTraders = useMemo(() => {
@@ -644,7 +770,67 @@ export const LedgerPage = () => {
 
   const selectedEntries = useMemo(() => selected?.entries || [], [selected]);
 
-  // Supplier KPIs — per-owner slice
+  // Selected supplier advances (case insensitive name match)
+  const selectedAdvances = useMemo(() => {
+    if (tab !== 'supplier' || !selected) return [];
+    return advances.filter(a => a.supplier.trim().toLowerCase() === selected.name.trim().toLowerCase())
+      .sort((a, b) => new Date(b.date) - new Date(a.date));
+  }, [advances, selected, tab]);
+
+  const totalAdvancesPaid = useMemo(() => {
+    return selectedAdvances.reduce((s, a) => s + (a.given || 0), 0);
+  }, [selectedAdvances]);
+
+  // Supplier report calculations (Auto-deductions logic)
+  const ledgerCalcs = useMemo(() => {
+    if (tab !== 'supplier' || !selected) return null;
+    
+    let totalSales = 0;
+    let totalFreight = 0;
+    let totalCrates = 0;
+    
+    selectedEntries.forEach(e => {
+      const slice = getOwnerSlice(e);
+      if (slice) {
+        totalCrates += slice.crates || 0;
+        totalSales += (slice.crates || 0) * (slice.rate || 0);
+        
+        // Share of freight
+        const totalCr = (e.ownerList || []).reduce((s, o) => s + (o.crates || 0), 0) || e.crates || 1;
+        const share = (slice.crates || 0) / totalCr;
+        totalFreight += Math.round((e.fare || 0) * share);
+      } else {
+        totalCrates += e.crates || 0;
+        totalSales += e.gross || 0;
+        totalFreight += e.fare || 0;
+      }
+    });
+
+    const laborCost = totalCrates * 10; // Rs. 10 per crate
+    const commission = totalCrates * 20; // Rs. 20 per crate (Laga)
+    const additionalDeductions = laborCost + commission; // Rs. 30 per crate total
+    const totalDeductions = totalFreight + additionalDeductions;
+    const netGoodsValue = totalSales - totalDeductions;
+    
+    const balance = netGoodsValue - totalAdvancesPaid;
+    const isPayable = balance >= 0;
+    const finalBalance = Math.abs(balance);
+
+    return {
+      totalSales,
+      totalFreight,
+      totalCrates,
+      laborCost,
+      commission,
+      additionalDeductions,
+      totalDeductions,
+      netGoodsValue,
+      finalBalance,
+      isPayable
+    };
+  }, [selectedEntries, selected, tab, totalAdvancesPaid]);
+
+  // Supplier KPIs (original simple values)
   const { selGross, selBalance } = useMemo(() => {
     if (tab !== 'supplier') return { selGross: 0, selBalance: 0 };
     let g = 0, b = 0;
@@ -681,9 +867,172 @@ export const LedgerPage = () => {
     return { custTotalPurchased: purchased, custTotalDue: due };
   }, [selectedEntries, selected, tab]);
 
+  // Handle inline advance recording
+  const handleRecordAdvance = () => {
+    if (!selected) return;
+    const amount = parseFloat(advForm.amount) || 0;
+    if (!amount || amount <= 0) {
+      alert('Amount must be greater than 0.');
+      return;
+    }
+    const newAdv = {
+      id: crypto.randomUUID(),
+      supplier: selected.name,
+      supplierId: selected.id || null,
+      date: advForm.date || TODAY,
+      given: amount,
+      used: 0,
+      remaining: amount,
+      notes: advForm.notes || 'Bayana',
+      appliedTo: []
+    };
+    setAdvances(prev => [newAdv, ...prev]);
+    setShowAdvanceModal(false);
+    setAdvForm({ date: TODAY, amount: '', notes: '' });
+  };
+
   return (
     <Page titleEn="Ledger Search" titleUr="کھاتہ تلاش" sub="Traders, goods owners, and customers — full history">
-      <div className="glass" style={{ padding: 24, marginBottom: 16 }}>
+      <style>{`
+        @media print {
+          /* Hide navigation & UI elements */
+          .sidebar, .topbar, .noprint, .btn, .filter-pill, input, select {
+            display: none !important;
+          }
+          body, .app, #root {
+            background: white !important;
+            color: black !important;
+            padding: 0 !important;
+            margin: 0 !important;
+            min-height: auto !important;
+            display: block !important;
+          }
+          .page-content {
+            padding: 0 !important;
+            margin: 0 !important;
+            border: none !important;
+            box-shadow: none !important;
+          }
+          .printable-ledger {
+            width: 100% !important;
+            max-width: 100% !important;
+            padding: 10px !important;
+            margin: 0 !important;
+            box-shadow: none !important;
+            border: none !important;
+            background: transparent !important;
+          }
+          .printable-ledger * {
+            color: black !important;
+            text-shadow: none !important;
+          }
+          .printable-ledger table {
+            width: 100% !important;
+            border-collapse: collapse !important;
+            margin-top: 10px !important;
+            font-size: 11px !important;
+          }
+          .printable-ledger th, .printable-ledger td {
+            border: 1px solid #333 !important;
+            padding: 5px 8px !important;
+            background: transparent !important;
+          }
+          .printable-ledger th {
+            background-color: #f3f4f6 !important;
+            font-weight: bold !important;
+          }
+          .ledger-kpi-grid {
+            display: grid !important;
+            grid-template-columns: repeat(4, 1fr) !important;
+            gap: 8px !important;
+            margin-bottom: 15px !important;
+          }
+          .ledger-kpi-card {
+            border: 1px solid #333 !important;
+            padding: 6px 10px !important;
+            border-radius: 4px !important;
+            background: transparent !important;
+          }
+          .kpi-title {
+            font-size: 9px !important;
+            color: #444 !important;
+            font-weight: bold !important;
+            text-transform: uppercase !important;
+          }
+          .kpi-val {
+            font-size: 14px !important;
+            font-weight: bold !important;
+          }
+          .ledger-title {
+            font-size: 18px !important;
+            font-weight: bold !important;
+            text-align: center !important;
+            margin-bottom: 2px !important;
+          }
+          .ledger-subtitle {
+            font-size: 11px !important;
+            text-align: center !important;
+            margin-bottom: 15px !important;
+            color: #444 !important;
+          }
+          .report-section {
+            page-break-inside: avoid !important;
+            margin-bottom: 15px !important;
+          }
+        }
+        
+        .ledger-kpi-grid {
+          display: grid;
+          grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+          gap: 16px;
+          margin-bottom: 24px;
+        }
+        .ledger-kpi-card {
+          padding: 16px;
+          border-radius: 12px;
+          transition: all 0.2s ease;
+        }
+        .kpi-title {
+          font-size: 11px;
+          font-weight: 700;
+          color: var(--text-3);
+          text-transform: uppercase;
+          letter-spacing: 0.05em;
+          margin-bottom: 4px;
+        }
+        .kpi-val {
+          font-size: 20px;
+          font-weight: 800;
+          font-family: var(--font-mono);
+        }
+        .kpi-meta {
+          font-size: 10px;
+          color: var(--text-4);
+          margin-top: 4px;
+        }
+        .report-section {
+          margin-bottom: 24px;
+        }
+        .section-header {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          margin-bottom: 12px;
+          border-bottom: 1px solid var(--glass-border);
+          padding-bottom: 6px;
+        }
+        .section-header h3 {
+          font-size: 14px;
+          font-weight: 700;
+          color: var(--orange-400);
+        }
+        .section-header .ur {
+          font-size: 14px;
+          color: var(--text-3);
+        }
+      `}</style>
+
+      <div className="glass noprint" style={{ padding: 24, marginBottom: 16 }}>
         <div className="row gap-sm" style={{ flexWrap: 'wrap' }}>
           <div className="tabs">
             <div className={`tab ${tab === 'supplier' ? 'active' : ''}`} onClick={() => { setTab('supplier'); setSelected(null); setQ(''); }}>
@@ -702,8 +1051,8 @@ export const LedgerPage = () => {
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: '280px 1fr', gap: 16 }} className="ledger-grid">
-        {/* Left list */}
-        <div className="glass" style={{ padding: 0, height: 'fit-content' }}>
+        {/* Left list (Sidebar list) */}
+        <div className="glass noprint" style={{ padding: 0, height: 'fit-content' }}>
           <div style={{ padding: '14px 18px', borderBottom: '1px solid var(--glass-border)' }}>
             <strong style={{ fontSize: 12, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
               {tab === 'supplier' ? 'Suppliers & Owners' : 'Customers'} · {filtered.length}
@@ -736,9 +1085,16 @@ export const LedgerPage = () => {
           )}
         </div>
 
-        {/* Right detail */}
+        {/* Right detail (Trader Ledger Report view) */}
         {selected ? (
-          <div>
+          <div className="printable-ledger">
+            {/* Printable Report Header */}
+            <div style={{ display: 'none' }} className="print-only">
+              <div className="ledger-title">{selected.name} — Trader Ledger Report</div>
+              <div className="ledger-subtitle">{selected.city || 'Quetta'} · {selected.phone || 'No phone'} · Generated: {new Date().toLocaleDateString('en-GB')}</div>
+            </div>
+
+            {/* Profile Header Block */}
             <div className="glass" style={{ padding: 24, marginBottom: 16 }}>
               <div className="row between" style={{ marginBottom: 16, flexWrap: 'wrap', gap: 12 }}>
                 <div className="row">
@@ -747,130 +1103,343 @@ export const LedgerPage = () => {
                     <h2 className="h2">{selected.name}</h2>
                     <div className="small">
                       {selected.city || '—'}{selected.phone ? ` · ${selected.phone}` : ''}
-                      {' · '}{selectedEntries.length} entr{selectedEntries.length !== 1 ? 'ies' : 'y'}
+                      {' · '}{selectedEntries.length} vehicle{selectedEntries.length !== 1 ? 's' : ''} received
                     </div>
-                    {tab === 'supplier' && (
+                    {tab === 'supplier' ? (
                       <div className="row gap-sm" style={{ marginTop: 4 }}>
                         {selected.isTruckTrader && <span className="chip" style={{ fontSize: 10 }}>Truck Trader</span>}
                         {selected.isGoodsOwner && <span className="chip active" style={{ fontSize: 10 }}>Goods Owner</span>}
+                        {ledgerCalcs && (
+                          <span className={`chip ${ledgerCalcs.isPayable ? 'success' : 'danger'}`}>
+                            {ledgerCalcs.isPayable ? '🟢 PAYABLE' : '🔴 RECEIVABLE'}
+                          </span>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="row gap-sm" style={{ marginTop: 4 }}>
+                        <span className="chip active" style={{ fontSize: 10 }}>Customer</span>
                       </div>
                     )}
                   </div>
                 </div>
-                <button className="btn btn-ghost btn-sm" onClick={() => window.print()}><Icon name="print" size={13} /> Print Ledger</button>
+                <div className="row gap-sm noprint">
+                  {tab === 'supplier' && (
+                    <button className="btn btn-primary btn-sm" onClick={() => setShowAdvanceModal(true)}>
+                      <Icon name="plus" size={12} /> Record Advance
+                    </button>
+                  )}
+                  {tab === 'customer' && (
+                    <button className="btn btn-primary btn-sm" onClick={() => setShowCustPaymentModal(true)}>
+                      <Icon name="plus" size={12} /> Record Payment
+                    </button>
+                  )}
+                  <button className="btn btn-ghost btn-sm" onClick={() => window.print()}><Icon name="print" size={13} /> Print Ledger</button>
+                </div>
               </div>
-              {tab === 'supplier' ? (
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 16 }}>
-                  <KPI label="Total Gross" ur="کل رقم" v={fmtShort(selGross)} />
-                  <KPI label="Entries" ur="اندراجات" v={selectedEntries.length} />
-                  <KPI label="Net Payable" ur="بقایا" v={fmtShort(Math.abs(selBalance))} accent="var(--orange-400)" />
+
+              {/* Trader Summary KPIs */}
+              {tab === 'supplier' && ledgerCalcs ? (
+                <div className="ledger-kpi-grid">
+                  <div className="glass-strong ledger-kpi-card">
+                    <div className="kpi-title">Total Sales Value</div>
+                    <div className="kpi-val" style={{ color: 'var(--text-1)' }}>{fmt(ledgerCalcs.totalSales)}</div>
+                    <div className="kpi-meta">Sales generated from goods</div>
+                  </div>
+                  <div className="glass-strong ledger-kpi-card" style={{ borderLeft: '3px solid var(--danger)' }}>
+                    <div className="kpi-title">Total Advances Paid</div>
+                    <div className="kpi-val" style={{ color: 'var(--danger)' }}>{fmt(totalAdvancesPaid)}</div>
+                    <div className="kpi-meta">Bayana & Bardana advances</div>
+                  </div>
+                  <div className="glass-strong ledger-kpi-card">
+                    <div className="kpi-title">Freight Charges</div>
+                    <div className="kpi-val">{fmt(ledgerCalcs.totalFreight)}</div>
+                    <div className="kpi-meta">Transport/carriage charges</div>
+                  </div>
+                  <div className="glass-strong ledger-kpi-card">
+                    <div className="kpi-title">Labor Deductions</div>
+                    <div className="kpi-val" style={{ color: 'var(--orange-400)' }}>{fmt(ledgerCalcs.laborCost)}</div>
+                    <div className="kpi-meta">crates * Rs.10 auto-deducted</div>
+                  </div>
+                  <div className="glass-strong ledger-kpi-card">
+                    <div className="kpi-title">Commission (Laga)</div>
+                    <div className="kpi-val" style={{ color: 'var(--orange-400)' }}>{fmt(ledgerCalcs.commission)}</div>
+                    <div className="kpi-meta">crates * Rs.20 auto-deducted</div>
+                  </div>
+                  <div className="glass-strong ledger-kpi-card" style={{ borderLeft: '3px solid var(--orange-400)' }}>
+                    <div className="kpi-title">Total Deductions</div>
+                    <div className="kpi-val" style={{ color: 'var(--orange-400)' }}>{fmt(ledgerCalcs.totalDeductions)}</div>
+                    <div className="kpi-meta">Freight + Rs.30/crate add-ons</div>
+                  </div>
+                  <div className="glass-strong ledger-kpi-card" style={{ borderLeft: '3px solid var(--success)' }}>
+                    <div className="kpi-title">Net Goods Value</div>
+                    <div className="kpi-val" style={{ color: 'var(--success)' }}>{fmt(ledgerCalcs.netGoodsValue)}</div>
+                    <div className="kpi-meta">Sales minus deductions</div>
+                  </div>
+                  <div className="glass-strong ledger-kpi-card" style={{ borderLeft: `3px solid ${ledgerCalcs.isPayable ? 'var(--success)' : 'var(--danger)'}` }}>
+                    <div className="kpi-title">{ledgerCalcs.isPayable ? 'Net Payable Owed' : 'Receivable Balance'}</div>
+                    <div className="kpi-val" style={{ color: ledgerCalcs.isPayable ? 'var(--success)' : 'var(--danger)' }}>{fmt(ledgerCalcs.finalBalance)}</div>
+                    <div className="kpi-meta">{ledgerCalcs.isPayable ? 'Mandi owes trader' : 'Trader owes mandi'}</div>
+                  </div>
                 </div>
               ) : (
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 16 }}>
-                  <KPI label="Total Purchased" ur="کل خریداری" v={fmtShort(custTotalPurchased)} />
-                  <KPI label="Purchases" ur="اندراجات" v={selectedEntries.length} />
-                  <KPI label="Total Due" ur="بقایہ" v={fmtShort(custTotalDue)} accent={custTotalDue > 0 ? 'var(--danger)' : 'var(--success)'} />
-                </div>
+                customerLedgerCalcs && (
+                  <div className="ledger-kpi-grid">
+                    <div className="glass-strong ledger-kpi-card">
+                      <div className="kpi-title">Total Crates Purchased</div>
+                      <div className="kpi-val">{customerLedgerCalcs.totalCrates}</div>
+                      <div className="kpi-meta">Crates purchased to date</div>
+                    </div>
+                    <div className="glass-strong ledger-kpi-card">
+                      <div className="kpi-title">Total Purchases (Goods)</div>
+                      <div className="kpi-val" style={{ color: 'var(--text-1)' }}>{fmt(customerLedgerCalcs.totalPurchases)}</div>
+                      <div className="kpi-meta">Goods value before taxes/fees</div>
+                    </div>
+                    <div className="glass-strong ledger-kpi-card">
+                      <div className="kpi-title">Total Payable (Taxes Inc.)</div>
+                      <div className="kpi-val" style={{ color: 'var(--text-1)' }}>{fmt(customerLedgerCalcs.totalPayable)}</div>
+                      <div className="kpi-meta">Purchases + hidden comm + wari</div>
+                    </div>
+                    <div className="glass-strong ledger-kpi-card" style={{ borderLeft: '3px solid var(--success)' }}>
+                      <div className="kpi-title">Total Recovered / Paid</div>
+                      <div className="kpi-val" style={{ color: 'var(--success)' }}>{fmt(customerLedgerCalcs.totalPayments)}</div>
+                      <div className="kpi-meta">Payments received from customer</div>
+                    </div>
+                    <div className="glass-strong ledger-kpi-card" style={{ borderLeft: `3px solid ${customerLedgerCalcs.outstanding > 0 ? 'var(--danger)' : 'var(--success)'}` }}>
+                      <div className="kpi-title">Outstanding Balance</div>
+                      <div className="kpi-val" style={{ color: customerLedgerCalcs.outstanding > 0 ? 'var(--danger)' : 'var(--success)' }}>{fmt(customerLedgerCalcs.outstanding)}</div>
+                      <div className="kpi-meta">Remaining due as of today</div>
+                    </div>
+                  </div>
+                )
               )}
             </div>
 
+            {/* Supplier Incoming Vehicles detail table */}
             {tab === 'supplier' && (
-              <div className="glass" style={{ padding: 0 }}>
-                <div className="row between" style={{ padding: '14px 18px', borderBottom: '1px solid var(--glass-border)' }}>
-                  <strong>Entry History · ٹرک تاریخ</strong>
-                  <span className="small">{selectedEntries.length} entries</span>
+              <div className="report-section">
+                <div className="section-header">
+                  <h3>Incoming Vehicles & Goods Ledger</h3>
+                  <span className="ur">آمدنی گاڑیوں کا کٹھہ</span>
                 </div>
-                {selectedEntries.length === 0 ? (
-                  <div style={{ padding: 32, textAlign: 'center', color: 'var(--text-3)', fontSize: 13 }}>No entries found.</div>
-                ) : (
+                <div className="glass" style={{ padding: 0 }}>
                   <div className="table-wrap">
                     <table className="table">
                       <thead>
                         <tr>
-                          <th>Bilty</th><th>Date</th><th>Vehicle</th>
-                          <th>Crates</th><th>Rate</th><th>Gross</th>
-                          <th>Net Payable</th><th>Status</th>
+                          <th>Bilty</th>
+                          <th>Arrival Date</th>
+                          <th>Vehicle No.</th>
+                          <th className="right">Crates/Bags</th>
+                          <th className="right">Avg Rate</th>
+                          <th className="right">Sale Value (Gross)</th>
+                          <th className="right">Freight</th>
+                          <th className="right">Labor (Rs.10/cr)</th>
+                          <th className="right">Commission (Rs.20/cr)</th>
+                          <th className="right">Net Goods Value</th>
                         </tr>
                       </thead>
                       <tbody>
-                        {selectedEntries.map((r, i) => {
-                          const slice = getOwnerSlice(r);
-                          const totalCr = (r.ownerList || []).reduce((s, o) => s + (o.crates || 0), 0) || r.crates || 1;
-                          const share = slice ? (slice.crates || 0) / totalCr : 1;
-                          const oGross = slice ? (slice.crates || 0) * (slice.rate || 0) : r.gross;
-                          const oBal = slice
-                            ? oGross - Math.round((r.labour||0)*share) - Math.round((r.laga||0)*share) - Math.round((r.fare||0)*share) - Math.round((r.advance||0)*share)
-                            : (r.balance !== undefined ? r.balance : r.gross - (r.fare||0) - (r.labour||0) - (r.laga||0));
-                          return (
-                            <tr key={i}>
-                              <td className="mono" style={{ color: 'var(--orange-400)', fontWeight: 600 }}>{r.id}</td>
-                              <td>{new Date(r.date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' })}</td>
-                              <td className="mono small">{r.vehicle}</td>
-                              <td className="num">{slice ? slice.crates : r.crates}</td>
-                              <td className="num small">{slice ? `Rs.${slice.rate}/cr` : '—'}</td>
-                              <td className="num">{fmt(oGross)}</td>
-                              <td className="num" style={{ color: 'var(--success)' }}>{fmt(Math.max(0, oBal))}</td>
-                              <td><span className={`chip ${r.status === 'cleared' ? 'success' : r.status === 'partial' ? 'warn' : 'danger'}`}>{r.status}</span></td>
-                            </tr>
-                          );
-                        })}
+                        {selectedEntries.length === 0 ? (
+                          <tr>
+                            <td colSpan={10} style={{ textAlign: 'center', padding: 20 }}>No vehicles received.</td>
+                          </tr>
+                        ) : (
+                          selectedEntries.map((r, i) => {
+                            const slice = getOwnerSlice(r);
+                            const totalCr = (r.ownerList || []).reduce((s, o) => s + (o.crates || 0), 0) || r.crates || 1;
+                            const share = slice ? (slice.crates || 0) / totalCr : 1;
+                            const cratesRec = slice ? slice.crates : r.crates;
+                            const rate = slice ? slice.rate : (cratesRec > 0 ? Math.round(r.gross / cratesRec) : 0);
+                            const oGross = slice ? (slice.crates || 0) * (slice.rate || 0) : r.gross;
+                            const fare = slice ? Math.round((r.fare || 0) * share) : r.fare;
+                            
+                            const vLabor = cratesRec * 10;
+                            const vComm = cratesRec * 20;
+                            const vDeductions = fare + vLabor + vComm;
+                            const vNet = oGross - vDeductions;
+                            
+                            return (
+                              <tr key={i}>
+                                <td className="mono" style={{ color: 'var(--orange-400)', fontWeight: 600 }}>{r.id}</td>
+                                <td>{new Date(r.date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}</td>
+                                <td className="mono small">{r.vehicle}</td>
+                                <td className="num right">{cratesRec}</td>
+                                <td className="num right small">Rs. {rate}/cr</td>
+                                <td className="num right">{fmt(oGross)}</td>
+                                <td className="num right" style={{ color: 'var(--danger)' }}>{fmt(fare)}</td>
+                                <td className="num right" style={{ color: 'var(--text-3)' }}>{fmt(vLabor)}</td>
+                                <td className="num right" style={{ color: 'var(--text-3)' }}>{fmt(vComm)}</td>
+                                <td className="num right" style={{ color: 'var(--success)', fontWeight: 700 }}>{fmt(vNet)}</td>
+                              </tr>
+                            );
+                          })
+                        )}
                       </tbody>
+                      {selectedEntries.length > 0 && ledgerCalcs && (
+                        <tfoot>
+                          <tr style={{ fontWeight: 700 }}>
+                            <td colSpan={3}>Report Summary Total</td>
+                            <td className="num right">{ledgerCalcs.totalCrates}</td>
+                            <td>—</td>
+                            <td className="num right">{fmt(ledgerCalcs.totalSales)}</td>
+                            <td className="num right" style={{ color: 'var(--danger)' }}>{fmt(ledgerCalcs.totalFreight)}</td>
+                            <td className="num right" style={{ color: 'var(--text-3)' }}>{fmt(ledgerCalcs.laborCost)}</td>
+                            <td className="num right" style={{ color: 'var(--text-3)' }}>{fmt(ledgerCalcs.commission)}</td>
+                            <td className="num right" style={{ color: 'var(--success)', fontSize: 13 }}>{fmt(ledgerCalcs.netGoodsValue)}</td>
+                          </tr>
+                        </tfoot>
+                      )}
                     </table>
                   </div>
-                )}
+                </div>
               </div>
             )}
 
-            {tab === 'customer' && (
-              <div className="glass" style={{ padding: 0 }}>
-                <div className="row between" style={{ padding: '14px 18px', borderBottom: '1px solid var(--glass-border)' }}>
-                  <strong>Purchase History · خریداری تاریخ</strong>
-                  <span className="small">{selectedEntries.length} entr{selectedEntries.length !== 1 ? 'ies' : 'y'}</span>
+            {/* Supplier Advances history table */}
+            {tab === 'supplier' && (
+              <div className="report-section">
+                <div className="section-header">
+                  <h3>Advances & Pre-Payments History</h3>
+                  <span className="ur">پیشگی ادائیگیاں تاریخ</span>
                 </div>
-                {selectedEntries.length === 0 ? (
-                  <div style={{ padding: 32, textAlign: 'center', color: 'var(--text-3)', fontSize: 13 }}>No purchases found.</div>
-                ) : (
+                <div className="glass" style={{ padding: 0 }}>
                   <div className="table-wrap">
                     <table className="table">
                       <thead>
                         <tr>
-                          <th>Bilty</th><th>Date</th><th>Supplier · Vehicle</th>
-                          <th>Crates</th><th>Rate</th><th>Gross</th>
-                          <th>Comm+Wari</th><th>Discount</th><th>Net Due</th><th>Type</th>
+                          <th>Date Given</th>
+                          <th>Advance ID</th>
+                          <th className="right">Amount Given</th>
+                          <th>Description / notes</th>
                         </tr>
                       </thead>
                       <tbody>
-                        {selectedEntries.map((e, i) => {
-                          const b = getBuyerSlice(e);
-                          if (!b) return null;
-                          const bGross = (b.crates || 0) * (b.price || 0);
-                          const bWari  = b.wari !== undefined ? b.wari : (b.crates || 0) * (e.logRate || 5);
-                          const bComm  = b.commission !== undefined ? b.commission : Math.round(bGross / (e.commDiv || 13.78));
-                          const bNet   = bGross + bComm + bWari - (b.discount || 0) - (b.advance || 0);
-                          return (
+                        {selectedAdvances.length === 0 ? (
+                          <tr>
+                            <td colSpan={4} style={{ textAlign: 'center', padding: 20 }}>No advances paid to this trader.</td>
+                          </tr>
+                        ) : (
+                          selectedAdvances.map((adv, i) => (
                             <tr key={i}>
-                              <td className="mono" style={{ color: 'var(--orange-400)', fontWeight: 600 }}>{e.id}</td>
-                              <td>{new Date(b.date || e.date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' })}</td>
-                              <td>
-                                <div style={{ fontWeight: 600, fontSize: 12 }}>{e.supplier}</div>
-                                <div className="mono tiny">{e.vehicle}</div>
-                              </td>
-                              <td className="num">{b.crates || 0}</td>
-                              <td className="num small">Rs.{(b.price || 0).toLocaleString()}/cr</td>
-                              <td className="num">{fmt(bGross)}</td>
-                              <td className="num" style={{ color: 'var(--success)' }}>+{fmt(bComm + bWari)}</td>
-                              <td className="num" style={{ color: 'var(--text-3)' }}>{b.discount ? `−${fmt(b.discount)}` : '—'}</td>
-                              <td className="num" style={{ fontWeight: 700, color: bNet > 0 ? 'var(--danger)' : 'var(--success)' }}>
-                                {fmt(Math.abs(bNet))}{bNet <= 0 ? ' ✓' : ''}
-                              </td>
-                              <td><span className={`chip ${b.type === 'Cash' ? 'success' : 'warn'}`} style={{ fontSize: 10 }}>{b.type || 'Cash'}</span></td>
+                              <td>{new Date(adv.date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}</td>
+                              <td className="mono" style={{ color: 'var(--orange-400)', fontWeight: 600 }}>{adv.id.substring(0, 8)}...</td>
+                              <td className="num right" style={{ color: 'var(--danger)', fontWeight: 600 }}>{fmt(adv.given)}</td>
+                              <td>{adv.notes || 'Bayana'}</td>
                             </tr>
-                          );
-                        })}
+                          ))
+                        )}
                       </tbody>
+                      {selectedAdvances.length > 0 && (
+                        <tfoot>
+                          <tr style={{ fontWeight: 700 }}>
+                            <td colSpan={2}>Total Advances Paid</td>
+                            <td className="num right" style={{ color: 'var(--danger)', fontSize: 13 }}>{fmt(totalAdvancesPaid)}</td>
+                            <td>—</td>
+                          </tr>
+                        </tfoot>
+                      )}
                     </table>
                   </div>
-                )}
+                </div>
+              </div>
+            )}
+
+            {/* Customer purchases & recoveries ledger table */}
+            {tab === 'customer' && customerLedgerCalcs && (
+              <div className="report-section">
+                <div className="section-header">
+                  <h3>Customer Purchases & Recovery Ledger</h3>
+                  <span className="ur">گاہک خریداری اور وصولی کا کٹھہ</span>
+                </div>
+                <div className="glass" style={{ padding: 0 }}>
+                  <div className="table-wrap">
+                    <table className="table">
+                      <thead>
+                        <tr>
+                          <th>Bilty / Ref</th>
+                          <th>Transaction Date</th>
+                          <th>Details / Vehicle</th>
+                          <th className="right">Crates</th>
+                          <th className="right">Rate</th>
+                          <th className="right">Total Bill (Debit)</th>
+                          <th className="right">Amount Paid (Credit)</th>
+                          <th className="right">Outstanding Balance</th>
+                          <th className="noprint">Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {customerLedgerCalcs.ledger.length === 0 ? (
+                          <tr>
+                            <td colSpan={9} style={{ textAlign: 'center', padding: 20 }}>No transactions recorded for this customer.</td>
+                          </tr>
+                        ) : (
+                          customerLedgerCalcs.ledger.map((tx, idx) => (
+                            <tr key={idx}>
+                              <td className="mono" style={{ color: 'var(--orange-400)', fontWeight: 600 }}>{tx.entryId}</td>
+                              <td>{new Date(tx.date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}</td>
+                              <td>
+                                {tx.billNo?.startsWith('RECOVERY') ? (
+                                  <span style={{ fontStyle: 'italic', color: 'var(--success)' }}>
+                                    {tx.billNo}
+                                  </span>
+                                ) : (
+                                  <div>
+                                    <div style={{ fontWeight: 600, fontSize: 12 }}>{tx.supplier}</div>
+                                    <div className="mono tiny">{tx.vehicle}</div>
+                                  </div>
+                                )}
+                              </td>
+                              <td className="num right">{tx.crates || '—'}</td>
+                              <td className="num right small">{tx.crates > 0 ? `Rs. ${tx.price}/cr` : '—'}</td>
+                              <td className="num right" style={{ fontWeight: tx.totalBill > 0 ? 600 : 400 }}>
+                                {tx.totalBill > 0 ? fmt(tx.totalBill) : '—'}
+                              </td>
+                              <td className="num right" style={{ color: 'var(--success)', fontWeight: tx.payment > 0 ? 600 : 400 }}>
+                                {tx.payment > 0 ? fmt(tx.payment) : '—'}
+                              </td>
+                              <td className="num right" style={{ fontWeight: 700, color: tx.balance > 0 ? 'var(--danger)' : 'var(--success)' }}>
+                                {fmt(tx.balance)}
+                              </td>
+                              <td className="noprint">
+                                {tx.crates > 0 && (
+                                  <button className="btn btn-ghost btn-sm btn-icon" title="Print Invoice"
+                                    onClick={() => {
+                                      const entryObj = entries.find(e => e.id === tx.entryId);
+                                      if (entryObj) {
+                                        printCustomerInvoice(
+                                          entryObj,
+                                          tx.rawBuyer,
+                                          tx.balance - (tx.totalBill - tx.payment)
+                                        );
+                                      }
+                                    }}
+                                  >
+                                    <Icon name="print" size={12} />
+                                  </button>
+                                )}
+                              </td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                      {customerLedgerCalcs.ledger.length > 0 && (
+                        <tfoot>
+                          <tr style={{ fontWeight: 700 }}>
+                            <td colSpan={3}>Report Summary Total</td>
+                            <td className="num right">{customerLedgerCalcs.totalCrates}</td>
+                            <td>—</td>
+                            <td className="num right">{fmt(customerLedgerCalcs.totalPayable)}</td>
+                            <td className="num right" style={{ color: 'var(--success)' }}>{fmt(customerLedgerCalcs.totalPayments)}</td>
+                            <td className="num right" style={{ color: customerLedgerCalcs.outstanding > 0 ? 'var(--danger)' : 'var(--success)' }}>
+                              {fmt(customerLedgerCalcs.outstanding)}
+                            </td>
+                            <td className="noprint">—</td>
+                          </tr>
+                        </tfoot>
+                      )}
+                    </table>
+                  </div>
+                </div>
               </div>
             )}
           </div>
@@ -881,6 +1450,87 @@ export const LedgerPage = () => {
           </div>
         )}
       </div>
+
+      {/* Record Advance Modal */}
+      {showAdvanceModal && selected && (
+        <div className="modal-backdrop" onClick={() => setShowAdvanceModal(false)}>
+          <div className="modal" style={{ maxWidth: 480 }} onClick={e => e.stopPropagation()}>
+            <div style={{ padding: 24, borderBottom: '1px solid var(--glass-border)', position: 'sticky', top: 0, background: 'var(--glass-bg-strong)', backdropFilter: 'blur(20px)' }}>
+              <div className="row">
+                <div style={{ flex: 1 }}>
+                  <h2 className="h2">Record Advance · پیشگی رقم</h2>
+                  <div className="small">Supplier: {selected.name}</div>
+                </div>
+                <button className="btn btn-ghost btn-icon" onClick={() => setShowAdvanceModal(false)}>✕</button>
+              </div>
+            </div>
+            <div style={{ padding: 24 }}>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14, marginBottom: 24 }}>
+                <div className="field">
+                  <div className="field-label"><span>Amount <span className="req">*</span></span><span className="ur">رقم</span></div>
+                  <div className="input-prefix">
+                    <span className="pre">Rs.</span>
+                    <input className="input num" type="number" placeholder="0" value={advForm.amount} onChange={e => setAdvForm(prev => ({ ...prev, amount: e.target.value }))} />
+                  </div>
+                </div>
+                <div className="field">
+                  <div className="field-label"><span>Date</span><span className="ur">تاریخ</span></div>
+                  <input className="input" type="date" value={advForm.date} onChange={e => setAdvForm(prev => ({ ...prev, date: e.target.value }))} />
+                </div>
+                <div className="field" style={{ gridColumn: '1 / -1' }}>
+                  <div className="field-label"><span>Description / Purpose</span><span className="ur">تفصیل</span></div>
+                  <input className="input" placeholder="e.g. Bayana / Bardana / Cash" value={advForm.notes} onChange={e => setAdvForm(prev => ({ ...prev, notes: e.target.value }))} />
+                </div>
+              </div>
+              <div className="row gap-sm" style={{ justifyContent: 'flex-end' }}>
+                <button className="btn btn-ghost" onClick={() => setShowAdvanceModal(false)}>Cancel</button>
+                <button className="btn btn-primary" onClick={handleRecordAdvance}><Icon name="check" size={13} /> Record Advance</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Record Customer Payment Modal */}
+      {showCustPaymentModal && selected && (
+        <div className="modal-backdrop" onClick={() => setShowCustPaymentModal(false)}>
+          <div className="modal" style={{ maxWidth: 480 }} onClick={e => e.stopPropagation()}>
+            <div style={{ padding: 24, borderBottom: '1px solid var(--glass-border)', position: 'sticky', top: 0, background: 'var(--glass-bg-strong)', backdropFilter: 'blur(20px)' }}>
+              <div className="row">
+                <div style={{ flex: 1 }}>
+                  <h2 className="h2">Record Recovery / Payment · وصولی رقم</h2>
+                  <div className="small">Customer: {selected.name}</div>
+                </div>
+                <button className="btn btn-ghost btn-icon" onClick={() => setShowCustPaymentModal(false)}>✕</button>
+              </div>
+            </div>
+            <div style={{ padding: 24 }}>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14, marginBottom: 24 }}>
+                <div className="field">
+                  <div className="field-label"><span>Amount <span className="req">*</span></span><span className="ur">رقم</span></div>
+                  <div className="input-prefix">
+                    <span className="pre">Rs.</span>
+                    <input className="input num" type="number" placeholder="0" value={custPaymentForm.amount} onChange={e => setCustPaymentForm(prev => ({ ...prev, amount: e.target.value }))} />
+                  </div>
+                </div>
+                <div className="field">
+                  <div className="field-label"><span>Date</span><span className="ur">تاریخ</span></div>
+                  <input className="input" type="date" value={custPaymentForm.date} onChange={e => setCustPaymentForm(prev => ({ ...prev, date: e.target.value }))} />
+                </div>
+                <div className="field" style={{ gridColumn: '1 / -1' }}>
+                  <div className="field-label"><span>Description / Purpose</span><span className="ur">تفصیل</span></div>
+                  <input className="input" placeholder="e.g. Recovery Payment / Bank Transfer" value={custPaymentForm.notes} onChange={e => setCustPaymentForm(prev => ({ ...prev, notes: e.target.value }))} />
+                </div>
+              </div>
+              <div className="row gap-sm" style={{ justifyContent: 'flex-end' }}>
+                <button className="btn btn-ghost" onClick={() => setShowCustPaymentModal(false)}>Cancel</button>
+                <button className="btn btn-primary" onClick={handleRecordCustPayment}><Icon name="check" size={13} /> Record Payment</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </Page>
   );
 };
+
